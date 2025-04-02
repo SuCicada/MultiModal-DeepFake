@@ -1,5 +1,8 @@
 import sys
 from pprint import pprint
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from PIL import Image, ImageDraw
 
 import utils
 from dataset import create_dataset, create_loader
@@ -25,6 +28,9 @@ import torchvision.transforms as transforms
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 
 
+# img = "data/DGM4/manipulation/StyleCLIP/1096799-StyleCLIP.jpg"
+# text = "The other day about six girls asked to kiss me on the cheek I feel like I ve earned it Sir Peter Blake"
+
 def preprocess_image(image, size=224):
     """Preprocess image for model input"""
     transform = Compose([
@@ -39,8 +45,9 @@ def preprocess_image(image, size=224):
 def text_input_adjust(text_input, fake_word_pos, device):
     # input_ids adaptation
     input_ids_remove_SEP = [x[:-1] for x in text_input.input_ids]
-    maxlen = max([len(x) for x in text_input.input_ids])-1
-    input_ids_remove_SEP_pad = [x + [0] * (maxlen - len(x)) for x in input_ids_remove_SEP] # only remove SEP as HAMMER is conducted with text with CLS
+    maxlen = max([len(x) for x in text_input.input_ids]) - 1
+    input_ids_remove_SEP_pad = [x + [0] * (maxlen - len(x)) for x in
+                                input_ids_remove_SEP]  # only remove SEP as HAMMER is conducted with text with CLS
     text_input.input_ids = torch.LongTensor(input_ids_remove_SEP_pad).to(device)
 
     # attention_mask adaptation
@@ -54,11 +61,12 @@ def text_input_adjust(text_input, fake_word_pos, device):
     for i in range(len(fake_word_pos)):
         fake_token_pos = []
 
-        fake_word_pos_decimal = np.where(fake_word_pos[i].numpy() == 1)[0].tolist() # transfer fake_word_pos into numbers
+        fake_word_pos_decimal = np.where(fake_word_pos[i].numpy() == 1)[
+            0].tolist()  # transfer fake_word_pos into numbers
 
         subword_idx = text_input.word_ids(i)
         subword_idx_rm_CLSSEP = subword_idx[1:-1]
-        subword_idx_rm_CLSSEP_array = np.array(subword_idx_rm_CLSSEP) # get the sub-word position (token position)
+        subword_idx_rm_CLSSEP_array = np.array(subword_idx_rm_CLSSEP)  # get the sub-word position (token position)
 
         subword_idx_rm_CLSSEP_batch.append(subword_idx_rm_CLSSEP_array)
 
@@ -70,62 +78,57 @@ def text_input_adjust(text_input, fake_word_pos, device):
     return text_input, fake_token_pos_batch, subword_idx_rm_CLSSEP_batch
 
 
-def inference(args, model, image, text, device, config):
-    model.eval()
+def visualize_results(image_path, text, output_coord, logits_tok, tokenizer, image_size=224):
+    if type(image_path) is list:
+        image_path = image_path[0]
+    if type(text) is list:
+        text = text[0]
+    pprint({
+        'image_path': image_path,
+        'text': text,
+        'output_coord': output_coord,
+        'logits_tok': logits_tok
+    })
+    # image_path, text = image_path, text
+    """Visualize the detection results"""
+    # Load and display image
+    image = Image.open(image_path).convert('RGB')
+    W, H = image.size
 
-    # Process image
-    if isinstance(image, str):
-        image = Image.open(image).convert('RGB')
-    image = preprocess_image(image)
-    image = image.unsqueeze(0).to(device)
+    # Create figure and axes
+    fig, ax = plt.subplots(1)
+    ax.imshow(image)
 
-    # Process text
-    tokenizer = BertTokenizerFast.from_pretrained(args.text_encoder)
-    text_input = tokenizer(text, max_length=128, truncation=True, add_special_tokens=True,
-                           return_attention_mask=True, return_token_type_ids=False)
-    text_input = text_input_adjust(text_input, device)
+    # Draw detection box
+    if output_coord is not None:
+        # Convert normalized coordinates to image coordinates
+        cx, cy, w, h = output_coord[0].cpu().numpy()
+        x = (cx - w / 2) * W
+        y = (cy - h / 2) * H
+        width = w * W
+        height = h * H
 
-    # Create dummy labels and boxes for inference
-    label = ['orig']  # dummy label
-    fake_image_box = torch.tensor([[0.5, 0.5, 0.1, 0.1]]).to(device)  # dummy box
-    fake_word_pos = torch.zeros((1, 128)).to(device)  # dummy word positions
+        # Create a Rectangle patch
+        rect = patches.Rectangle((x, y), width, height, linewidth=2, edgecolor='r', facecolor='none')
+        ax.add_patch(rect)
 
-    with torch.no_grad():
-        logits_real_fake, logits_multicls, output_coord, logits_tok = model(
-            image, label, text_input, fake_image_box, fake_word_pos, is_train=False
-        )
+    # Process text tokens
+    tokens = tokenizer.tokenize(text)
+    logits_tok = logits_tok.view(-1, 2)
+    manipulated_tokens = logits_tok.argmax(1).cpu().numpy()
 
-    # Process results
-    # 1. Real/Fake classification
-    real_fake_probs = F.softmax(logits_real_fake, dim=1)
-    is_fake = real_fake_probs[0][1].item() > 0.5
+    # Print manipulated words
+    print("\nManipulated Words:")
+    for i, (token, is_manipulated) in enumerate(zip(tokens[:len(manipulated_tokens)], manipulated_tokens)):
+        if is_manipulated:
+            print(f"{token} (manipulated)")
 
-    # 2. Multi-label classification
-    multi_label_probs = torch.sigmoid(logits_multicls)
-    multi_labels = (multi_label_probs > 0.5).cpu().numpy()
-
-    # 3. Detection box
-    boxes = output_coord.cpu().numpy()  # Keep in cxcywh format
-
-    # 4. Token classification (manipulated words)
-    token_probs = F.softmax(logits_tok, dim=-1)
-    manipulated_tokens = (token_probs[0, :, 1] > 0.5).cpu().numpy()
-
-    # Get token lengths to match with tokenized text
-    token_length = min(len(tokenizer.tokenize(text)), manipulated_tokens.shape[0])
-    manipulated_tokens = manipulated_tokens[:token_length]
-
-    return {
-        'is_fake': is_fake,
-        'real_fake_probs': real_fake_probs.cpu().numpy(),
-        'multi_labels': multi_labels,
-        'multi_label_probs': multi_label_probs.cpu().numpy(),
-        'detection_box': boxes,
-        'manipulated_tokens': manipulated_tokens,
-        'token_probs': token_probs.cpu().numpy(),
-        'tokenizer': tokenizer,
-        'text': text
-    }
+    plt.axis('off')
+    plt.show()
+    output_path = "output.png"
+    if output_path:
+        plt.savefig(output_path, bbox_inches='tight', pad_inches=0)
+        print(f"Visualization saved to {output_path}")
 
 
 def main():
@@ -134,8 +137,8 @@ def main():
     parser.add_argument('--checkpoint', required=True, help='Path to model checkpoint')
     parser.add_argument('--text_encoder', default='bert-base-uncased')
     parser.add_argument('--device', default='cuda')
-    parser.add_argument('--image', required=True, help='Path to input image')
-    parser.add_argument('--text', required=True, help='Input text')
+    # parser.add_argument('--image', required=True, help='Path to input image')
+    # parser.add_argument('--text', required=True, help='Input text')
 
     args = parser.parse_args()
     config = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)
@@ -172,6 +175,7 @@ def main():
                                collate_fns=[None])[0]
     model_without_ddp = model
     evaluation(args, model, val_loader, tokenizer, device, config)
+
     # Print results
     # print("\nInference Results:")
     # print(f"Image: {args.image}")
@@ -228,9 +232,8 @@ def evaluation(args, model, data_loader, tokenizer, device, config):
     multi_label_meter = AveragePrecisionMeter(difficult_examples=False)
     multi_label_meter.reset()
 
-    for i, (image, label, text, fake_image_box, fake_word_pos, W, H) in (
+    for i, (image_path, image, label, text, fake_image_box, fake_word_pos, W, H) in (
             enumerate(metric_logger.log_every(args, data_loader, print_freq, header))):
-
         image = image.to(device, non_blocking=True)
 
         text_input = tokenizer(text, max_length=128, truncation=True, add_special_tokens=True,
@@ -247,6 +250,8 @@ def evaluation(args, model, data_loader, tokenizer, device, config):
             "output_coord": output_coord,
             "logits_tok": logits_tok
         })
+
+        visualize_results(image_path[0], text, output_coord, logits_tok, tokenizer, )
     #     ##================= real/fake cls ========================##
     #     cls_label = torch.ones(len(label), dtype=torch.long).to(image.device)
     #     real_label_pos = np.where(np.array(label) == 'orig')[0].tolist()
@@ -350,15 +355,16 @@ def evaluation(args, model, data_loader, tokenizer, device, config):
 # "text": "Geoffrey Martin has run a butcher shop for 28 years",
 
 if __name__ == '__main__':
-    image = "data/DGM4/origin/bbc/0498/511.jpg"
-    text = "Geoffrey Martin has run a butcher shop for 28 years"
+    # image = "data/DGM4/origin/bbc/0498/511.jpg"
+    # text = "Geoffrey Martin has run a butcher shop for 28 years"
 
     sys.argv = ['inference.py',
                 '--config', './configs/my.yaml',
                 '--checkpoint', './results/checkpoint/checkpoint_best.pth',
                 '--text_encoder', 'bert-base-uncased',
                 '--device', 'cuda',
-                '--image', image,
-                '--text', text]
+                # '--image', image,
+                # '--text', text]
+                ]
 
     main()
