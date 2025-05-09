@@ -1,0 +1,7 @@
+__pycache__
+checkpoint
+*.pth
+/data
+.idea
+.cursor
+*.png

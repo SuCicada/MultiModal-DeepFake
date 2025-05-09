@@ -8,32 +8,21 @@ import argparse
 import ruamel_yaml as yaml
 import numpy as np
 import random
-import time
-import datetime
 import json
-from pathlib import Path
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 import torch.backends.cudnn as cudnn
-import torch.distributed as dist
 
 from models.vit import interpolate_pos_embed
 from transformers import BertTokenizerFast
 
 import utils
 from dataset import create_dataset, create_sampler, create_loader
-from scheduler import create_scheduler
-from optim import create_optimizer
 
-import torch.multiprocessing as mp
-from torch.utils.tensorboard import SummaryWriter
 import logging
 from types import MethodType
 from tools.env import init_dist
-from tqdm import tqdm
 
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import roc_curve
@@ -72,7 +61,7 @@ def text_input_adjust(text_input, fake_word_pos, device):
     input_ids_remove_SEP = [x[:-1] for x in text_input.input_ids]
     maxlen = max([len(x) for x in text_input.input_ids])-1
     input_ids_remove_SEP_pad = [x + [0] * (maxlen - len(x)) for x in input_ids_remove_SEP] # only remove SEP as HAMMER is conducted with text with CLS
-    text_input.input_ids = torch.LongTensor(input_ids_remove_SEP_pad).to(device) 
+    text_input.input_ids = torch.LongTensor(input_ids_remove_SEP_pad).to(device)
 
     # attention_mask adaptation
     attention_mask_remove_SEP = [x[:-1] for x in text_input.attention_mask]
@@ -90,38 +79,38 @@ def text_input_adjust(text_input, fake_word_pos, device):
         subword_idx = text_input.word_ids(i)
         subword_idx_rm_CLSSEP = subword_idx[1:-1]
         subword_idx_rm_CLSSEP_array = np.array(subword_idx_rm_CLSSEP) # get the sub-word position (token position)
-        
+
         subword_idx_rm_CLSSEP_batch.append(subword_idx_rm_CLSSEP_array)
-        
+
         # transfer the fake word position into fake token position
-        for i in fake_word_pos_decimal: 
+        for i in fake_word_pos_decimal:
             fake_token_pos.extend(np.where(subword_idx_rm_CLSSEP_array == i)[0].tolist())
         fake_token_pos_batch.append(fake_token_pos)
 
     return text_input, fake_token_pos_batch, subword_idx_rm_CLSSEP_batch
 
-  
+
 
 @torch.no_grad()
 def evaluation(args, model, data_loader, tokenizer, device, config):
     # test
-    model.eval() 
-    
+    model.eval()
+
     metric_logger = utils.MetricLogger(delimiter="  ")
-    header = 'Evaluation:'    
-    
+    header = 'Evaluation:'
+
     print('Computing features for evaluation...')
-    print_freq = 200 
+    print_freq = 200
 
     y_true, y_pred, IOU_pred, IOU_50, IOU_75, IOU_95 = [], [], [], [], [], []
     cls_nums_all = 0
-    cls_acc_all = 0   
+    cls_acc_all = 0
 
     TP_all = 0
     TN_all = 0
     FP_all = 0
     FN_all = 0
-    
+
     TP_all_multicls = np.zeros(4, dtype = int)
     TN_all_multicls = np.zeros(4, dtype = int)
     FP_all_multicls = np.zeros(4, dtype = int)
@@ -131,18 +120,18 @@ def evaluation(args, model, data_loader, tokenizer, device, config):
     multi_label_meter = AveragePrecisionMeter(difficult_examples=False)
     multi_label_meter.reset()
 
-    for i, (image_dir_all, image, label, text, fake_image_box, fake_word_pos, W, H) in enumerate(metric_logger.log_every(args, data_loader, print_freq, header)):
-        
-        image = image.to(device,non_blocking=True) 
-        
-        text_input = tokenizer(text, max_length=128, truncation=True, add_special_tokens=True, return_attention_mask=True, return_token_type_ids=False) 
-        
+    for i, (image, label, text, fake_image_box, fake_word_pos, W, H) in enumerate(metric_logger.log_every(args, data_loader, print_freq, header)):
+
+        image = image.to(device,non_blocking=True)
+
+        text_input = tokenizer(text, max_length=128, truncation=True, add_special_tokens=True, return_attention_mask=True, return_token_type_ids=False)
+
         text_input, fake_token_pos, _ = text_input_adjust(text_input, fake_word_pos, device)
 
         logits_real_fake, logits_multicls, output_coord, logits_tok = model(image, label, text_input, fake_image_box, fake_token_pos, is_train=False)
 
-        ##================= real/fake cls ========================## 
-        cls_label = torch.ones(len(label), dtype=torch.long).to(image.device) 
+        ##================= real/fake cls ========================##
+        cls_label = torch.ones(len(label), dtype=torch.long).to(image.device)
         real_label_pos = np.where(np.array(label) == 'orig')[0].tolist()
         cls_label[real_label_pos] = 0
 
@@ -156,18 +145,18 @@ def evaluation(args, model, data_loader, tokenizer, device, config):
         # ----- multi metrics -----
         target, _ = get_multi_label(label, image)
         multi_label_meter.add(logits_multicls, target)
-        
+
         for cls_idx in range(logits_multicls.shape[1]):
             cls_pred = logits_multicls[:, cls_idx]
             cls_pred[cls_pred>=0]=1
             cls_pred[cls_pred<0]=0
-            
+
             TP_all_multicls[cls_idx] += torch.sum((target[:, cls_idx] == 1) * (cls_pred == 1)).item()
             TN_all_multicls[cls_idx] += torch.sum((target[:, cls_idx] == 0) * (cls_pred == 0)).item()
             FP_all_multicls[cls_idx] += torch.sum((target[:, cls_idx] == 0) * (cls_pred == 1)).item()
             FN_all_multicls[cls_idx] += torch.sum((target[:, cls_idx] == 1) * (cls_pred == 0)).item()
-            
-        ##================= bbox cls ========================## 
+
+        ##================= bbox cls ========================##
         boxes1 = box_ops.box_cxcywh_to_xyxy(output_coord)
         boxes2 = box_ops.box_cxcywh_to_xyxy(fake_image_box)
 
@@ -187,7 +176,7 @@ def evaluation(args, model, data_loader, tokenizer, device, config):
         IOU_75.extend(IOU_75_bt.cpu().tolist())
         IOU_95.extend(IOU_95_bt.cpu().tolist())
 
-        ##================= token cls ========================##  
+        ##================= token cls ========================##
         token_label = text_input.attention_mask[:,1:].clone() # [:,1:] for ingoring class token
         token_label[token_label==0] = -100 # -100 index = padding token
         token_label[token_label==1] = 0
@@ -197,7 +186,7 @@ def evaluation(args, model, data_loader, tokenizer, device, config):
             if fake_pos_sample:
                 for pos in fake_pos_sample:
                     token_label[batch_idx, pos] = 1
-                    
+
         logits_tok_reshape = logits_tok.view(-1, 2)
         logits_tok_pred = logits_tok_reshape.argmax(1)
         token_label_reshape = token_label.view(-1)
@@ -207,14 +196,14 @@ def evaluation(args, model, data_loader, tokenizer, device, config):
         TN_all += torch.sum((token_label_reshape == 0) * (logits_tok_pred == 0)).item()
         FP_all += torch.sum((token_label_reshape == 0) * (logits_tok_pred == 1)).item()
         FN_all += torch.sum((token_label_reshape == 1) * (logits_tok_pred == 0)).item()
-                 
-    ##================= real/fake cls ========================## 
+
+    ##================= real/fake cls ========================##
     y_true, y_pred = np.array(y_true), np.array(y_pred)
     AUC_cls = roc_auc_score(y_true, y_pred)
     ACC_cls = cls_acc_all / cls_nums_all
     fpr, tpr, thresholds = roc_curve(y_true, y_pred, pos_label=1)
     EER_cls = brentq(lambda x: 1. - x - interp1d(fpr, tpr)(x), 0., 1.)
-    
+
     ##================= bbox cls ========================##
     IOU_score = sum(IOU_pred)/len(IOU_pred)
     IOU_ACC_50 = sum(IOU_50)/len(IOU_50)
@@ -225,20 +214,20 @@ def evaluation(args, model, data_loader, tokenizer, device, config):
     Precision_tok = TP_all / (TP_all + FP_all)
     Recall_tok = TP_all / (TP_all + FN_all)
     F1_tok = 2*Precision_tok*Recall_tok / (Precision_tok + Recall_tok)
-    ##================= multi-label cls ========================## 
+    ##================= multi-label cls ========================##
     MAP = multi_label_meter.value().mean()
     OP, OR, OF1, CP, CR, CF1 = multi_label_meter.overall()
-            
+
     for cls_idx in range(logits_multicls.shape[1]):
         Precision_multicls = TP_all_multicls[cls_idx] / (TP_all_multicls[cls_idx] + FP_all_multicls[cls_idx])
         Recall_multicls = TP_all_multicls[cls_idx] / (TP_all_multicls[cls_idx] + FN_all_multicls[cls_idx])
-        F1_multicls[cls_idx] = 2*Precision_multicls*Recall_multicls / (Precision_multicls + Recall_multicls)            
+        F1_multicls[cls_idx] = 2*Precision_multicls*Recall_multicls / (Precision_multicls + Recall_multicls)
 
     return AUC_cls, ACC_cls, EER_cls, \
         MAP.item(), OP, OR, OF1, CP, CR, CF1, F1_multicls, \
         IOU_score, IOU_ACC_50, IOU_ACC_75, IOU_ACC_95, \
         ACC_tok, Precision_tok, Recall_tok, F1_tok
-    
+
 def main_worker(gpu, args, config):
 
     if gpu is not None:
@@ -253,7 +242,7 @@ def main_worker(gpu, args, config):
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f'shell_{eval_type}.txt')
     logger = setlogger(log_file)
-    
+
     if args.log:
         logger.info('******************************')
         logger.info(args)
@@ -261,7 +250,7 @@ def main_worker(gpu, args, config):
         logger.info(config)
         logger.info('******************************')
 
-    
+
     device = torch.device(args.device)
 
     # fix the seed for reproducibility
@@ -272,46 +261,46 @@ def main_worker(gpu, args, config):
     cudnn.benchmark = True
 
 
-    #### Model #### 
+    #### Model ####
     tokenizer = BertTokenizerFast.from_pretrained(args.text_encoder)
     if args.log:
         print(f"Creating MAMMER")
     model = HAMMER(args=args, config=config, text_encoder=args.text_encoder, tokenizer=tokenizer, init_deit=True)
-    
-    model = model.to(device)   
+
+    model = model.to(device)
 
     checkpoint_dir = f'{args.output_dir}/{args.log_num}/checkpoint_{args.test_epoch}.pth'
-    checkpoint = torch.load(checkpoint_dir, map_location='cpu') 
-    state_dict = checkpoint['model']                       
+    checkpoint = torch.load(checkpoint_dir, map_location='cpu')
+    state_dict = checkpoint['model']
 
-    pos_embed_reshaped = interpolate_pos_embed(state_dict['visual_encoder.pos_embed'],model.visual_encoder)   
-    state_dict['visual_encoder.pos_embed'] = pos_embed_reshaped       
-                   
-    # model.load_state_dict(state_dict)  
+    pos_embed_reshaped = interpolate_pos_embed(state_dict['visual_encoder.pos_embed'],model.visual_encoder)
+    state_dict['visual_encoder.pos_embed'] = pos_embed_reshaped
+
+    # model.load_state_dict(state_dict)
     if args.log:
-        print('load checkpoint from %s'%checkpoint_dir)  
+        print('load checkpoint from %s'%checkpoint_dir)
     msg = model.load_state_dict(state_dict, strict=False)
     if args.log:
-        print(msg)  
+        print(msg)
 
-    #### Dataset #### 
+    #### Dataset ####
     if args.log:
         print("Creating dataset")
     _, val_dataset = create_dataset(config)
-    
-    if args.distributed:  
-        samplers = create_sampler([val_dataset], [True], args.world_size, args.rank) + [None]    
+
+    if args.distributed:
+        samplers = create_sampler([val_dataset], [True], args.world_size, args.rank) + [None]
     else:
         samplers = [None]
 
     val_loader = create_loader([val_dataset],
                                 samplers,
-                                batch_size=[config['batch_size_val']], 
-                                num_workers=[4], 
-                                is_trains=[False], 
+                                batch_size=[config['batch_size_val']],
+                                num_workers=[4],
+                                is_trains=[False],
                                 collate_fns=[None])[0]
 
-    
+
     model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
@@ -348,25 +337,25 @@ def main_worker(gpu, args, config):
                     "Recall_tok": "{:.4f}".format(Recall_tok*100),
                     "F1_tok": "{:.4f}".format(F1_tok*100),
     }
-    
-    if utils.is_main_process(): 
+
+    if utils.is_main_process():
         log_stats = {**{f'val_{k}': v for k, v in val_stats.items()},
                         'epoch': args.test_epoch,
-                    }             
+                    }
         with open(os.path.join(log_dir, f"results_{eval_type}.txt"),"a") as f:
             f.write(json.dumps(log_stats) + "\n")
 
- 
-if __name__ == '__main__':
+
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='./configs/Pretrain.yaml')
-    parser.add_argument('--checkpoint', default='') 
+    parser.add_argument('--checkpoint', default='')
     parser.add_argument('--resume', default=False, type=bool)
     parser.add_argument('--output_dir', default='/mnt/lustre/share/rshao/data/FakeNews/Ours/results')
     parser.add_argument('--text_encoder', default='bert-base-uncased')
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--seed', default=777, type=int)
-    # parser.add_argument('--world_size', default=1, type=int, help='number of distributed processes')    
+    # parser.add_argument('--world_size', default=1, type=int, help='number of distributed processes')
     # parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     parser.add_argument('--distributed', default=False, type=bool)
     parser.add_argument('--rank', default=-1, type=int,
@@ -387,5 +376,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     config = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)
- 
+
     main_worker(0, args, config)
+
+
+if __name__ == '__main__':
+    main()

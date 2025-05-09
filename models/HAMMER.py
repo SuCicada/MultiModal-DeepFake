@@ -13,11 +13,11 @@ from models import box_ops
 from tools.multilabel_metrics import get_multi_label
 from timm.models.layers import trunc_normal_
 
-class HAMMER(nn.Module):
+class HAMMER(nn.Module):#继承自pytorch的nn.model
     def __init__(self, 
                  args = None, 
                  config = None,               
-                 text_encoder = None,
+                 text_encoder = None,#文字编码器
                  tokenizer = None,
                  init_deit = True
                  ):
@@ -27,10 +27,10 @@ class HAMMER(nn.Module):
         self.tokenizer = tokenizer 
         embed_dim = config['embed_dim']
      
-        self.visual_encoder = VisionTransformer(
+        self.visual_encoder = VisionTransformer(#初始化视觉模型
             img_size=config['image_res'], patch_size=16, embed_dim=768, depth=12, num_heads=12, 
             mlp_ratio=4, qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6))   
-        
+        #patch size的意思是去多大块的
         if init_deit:
             checkpoint = torch.hub.load_state_dict_from_url(
                 url="https://dl.fbaipublicfiles.com/deit/deit_base_patch16_224-b5f2ef4d.pth",

@@ -78,7 +78,7 @@ def text_input_adjust(text_input, fake_word_pos, device):
     return text_input, fake_token_pos_batch, subword_idx_rm_CLSSEP_batch
 
 
-def visualize_results(image_path, text, output_coord, logits_tok, tokenizer, image_size=224):
+def visualize_results(image_path, text, output_coord, logits_tok, tokenizer, idx = None, image_size=224):
     if type(image_path) is list:
         image_path = image_path[0]
     if type(text) is list:
@@ -125,7 +125,7 @@ def visualize_results(image_path, text, output_coord, logits_tok, tokenizer, ima
 
     plt.axis('off')
     plt.show()
-    output_path = "output.png"
+    output_path = f"output_{i}.png"
     if output_path:
         plt.savefig(output_path, bbox_inches='tight', pad_inches=0)
         print(f"Visualization saved to {output_path}")

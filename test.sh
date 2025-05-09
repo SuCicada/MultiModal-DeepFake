@@ -1,7 +1,8 @@
-EXPID=your_best_model_dir_name
+#!/bin/bash
+EXPID=checkpoint
 
 HOST='127.0.0.1'
-PORT='1'
+PORT='2'
 
 NUM_GPU=1
 

@@ -19,9 +19,10 @@ import random
 from random import random as rand
 
 class DGM4_Dataset(Dataset):
-    def __init__(self, config, ann_file, transform, max_words=30, is_train=True): 
-        
-        self.root_dir = '../../datasets'       
+    def __init__(self, config, ann_file, transform, max_words=30, is_train=True):
+
+        # self.root_dir = '../../datasets'
+        self.root_dir = './data'
         self.ann = []
         for f in ann_file:
             self.ann += json.load(open(f,'r'))
@@ -33,7 +34,7 @@ class DGM4_Dataset(Dataset):
         self.image_res = config['image_res']
 
         self.is_train = is_train
-        
+
     def __len__(self):
         return len(self.ann)
 
@@ -41,19 +42,19 @@ class DGM4_Dataset(Dataset):
         xmin, ymin, xmax, ymax = bbox
         w = xmax - xmin
         h = ymax - ymin
-        return int(xmin), int(ymin), int(w), int(h)    
+        return int(xmin), int(ymin), int(w), int(h)
 
-    def __getitem__(self, index):    
-        
+    def __getitem__(self, index):
+
         ann = self.ann[index]
-        img_dir = ann['image']    
+        img_dir = ann['image']
         image_dir_all = f'{self.root_dir}/{img_dir}'
 
         try:
-            image = Image.open(image_dir_all).convert('RGB')   
+            image = Image.open(image_dir_all).convert('RGB')
         except Warning:
-            raise ValueError("### Warning: fakenews_dataset Image.open")   
-                         
+            raise ValueError("### Warning: fakenews_dataset Image.open")
+
         W, H = image.size
         has_bbox = False
         try:
@@ -71,10 +72,10 @@ class DGM4_Dataset(Dataset):
 
             image = resize(image, [self.image_res, self.image_res], interpolation=Image.BICUBIC)
         image = self.transform(image)
-            
+
         if has_bbox:
             # flipped applied
-            if do_hflip:  
+            if do_hflip:
                 x = (W - x) - w  # W is w0
 
             # resize applied
@@ -86,9 +87,9 @@ class DGM4_Dataset(Dataset):
             center_x = x + 1 / 2 * w
             center_y = y + 1 / 2 * h
 
-            fake_image_box = torch.tensor([center_x / self.image_res, 
+            fake_image_box = torch.tensor([center_x / self.image_res,
                         center_y / self.image_res,
-                        w / self.image_res, 
+                        w / self.image_res,
                         h / self.image_res],
                         dtype=torch.float)
 
@@ -101,6 +102,5 @@ class DGM4_Dataset(Dataset):
         for i in fake_text_pos:
             if i<self.max_words:
                 fake_text_pos_list[i]=1
-        
-                
-        return image, label, caption, fake_image_box, fake_text_pos_list, W, H
+
+        return image_dir_all,image, label, caption, fake_image_box, fake_text_pos_list, W, H
