@@ -1,3 +1,4 @@
+from datetime import datetime
 import sys
 from pprint import pprint
 import matplotlib.pyplot as plt
@@ -125,7 +126,8 @@ def visualize_results(image_path, text, output_coord, logits_tok, tokenizer, idx
 
     plt.axis('off')
     plt.show()
-    output_path = f"output_{i}.png"
+    date = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = f"output-{date}.png"
     if output_path:
         plt.savefig(output_path, bbox_inches='tight', pad_inches=0)
         print(f"Visualization saved to {output_path}")
