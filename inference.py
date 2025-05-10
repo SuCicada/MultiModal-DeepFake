@@ -1,3 +1,7 @@
+from matplotlib.axes import Axes
+from FaceMaskDetection.main import face_mask_detection
+from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
+import torchvision.transforms as transforms
 from datetime import datetime
 import sys
 from pprint import pprint
@@ -25,9 +29,6 @@ warnings.filterwarnings("ignore")
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-import torchvision.transforms as transforms
-from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
-
 
 # img = "data/DGM4/manipulation/StyleCLIP/1096799-StyleCLIP.jpg"
 # text = "The other day about six girls asked to kiss me on the cheek I feel like I ve earned it Sir Peter Blake"
@@ -49,12 +50,15 @@ def text_input_adjust(text_input, fake_word_pos, device):
     maxlen = max([len(x) for x in text_input.input_ids]) - 1
     input_ids_remove_SEP_pad = [x + [0] * (maxlen - len(x)) for x in
                                 input_ids_remove_SEP]  # only remove SEP as HAMMER is conducted with text with CLS
-    text_input.input_ids = torch.LongTensor(input_ids_remove_SEP_pad).to(device)
+    text_input.input_ids = torch.LongTensor(
+        input_ids_remove_SEP_pad).to(device)
 
     # attention_mask adaptation
     attention_mask_remove_SEP = [x[:-1] for x in text_input.attention_mask]
-    attention_mask_remove_SEP_pad = [x + [0] * (maxlen - len(x)) for x in attention_mask_remove_SEP]
-    text_input.attention_mask = torch.LongTensor(attention_mask_remove_SEP_pad).to(device)
+    attention_mask_remove_SEP_pad = [
+        x + [0] * (maxlen - len(x)) for x in attention_mask_remove_SEP]
+    text_input.attention_mask = torch.LongTensor(
+        attention_mask_remove_SEP_pad).to(device)
 
     # fake_token_pos adaptation
     fake_token_pos_batch = []
@@ -67,19 +71,29 @@ def text_input_adjust(text_input, fake_word_pos, device):
 
         subword_idx = text_input.word_ids(i)
         subword_idx_rm_CLSSEP = subword_idx[1:-1]
-        subword_idx_rm_CLSSEP_array = np.array(subword_idx_rm_CLSSEP)  # get the sub-word position (token position)
+        # get the sub-word position (token position)
+        subword_idx_rm_CLSSEP_array = np.array(subword_idx_rm_CLSSEP)
 
         subword_idx_rm_CLSSEP_batch.append(subword_idx_rm_CLSSEP_array)
 
         # transfer the fake word position into fake token position
         for i in fake_word_pos_decimal:
-            fake_token_pos.extend(np.where(subword_idx_rm_CLSSEP_array == i)[0].tolist())
+            fake_token_pos.extend(
+                np.where(subword_idx_rm_CLSSEP_array == i)[0].tolist())
         fake_token_pos_batch.append(fake_token_pos)
 
     return text_input, fake_token_pos_batch, subword_idx_rm_CLSSEP_batch
 
 
-def visualize_results(image_path, text, output_coord, logits_tok, tokenizer, idx = None, image_size=224):
+def draw_pres_bbox(ax:Axes, bbox):
+    xmin, ymin, xmax, ymax = bbox
+    width = xmax - xmin
+    height = ymax - ymin
+    rect = patches.Rectangle((xmin, ymin), width, height, linewidth=2, edgecolor='green', facecolor='none')
+    ax.add_patch(rect)
+
+
+def visualize_results(image_path, text, output_coord, logits_tok, tokenizer, pre_bbox):
     if type(image_path) is list:
         image_path = image_path[0]
     if type(text) is list:
@@ -110,8 +124,11 @@ def visualize_results(image_path, text, output_coord, logits_tok, tokenizer, idx
         height = h * H
 
         # Create a Rectangle patch
-        rect = patches.Rectangle((x, y), width, height, linewidth=2, edgecolor='r', facecolor='none')
+        rect = patches.Rectangle(
+            (x, y), width, height, linewidth=2, edgecolor='r', facecolor='none')
         ax.add_patch(rect)
+
+    draw_pres_bbox(ax, pre_bbox)
 
     # Process text tokens
     tokens = tokenizer.tokenize(text)
@@ -136,7 +153,8 @@ def visualize_results(image_path, text, output_coord, logits_tok, tokenizer, idx
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='./configs/Pretrain.yaml')
-    parser.add_argument('--checkpoint', required=True, help='Path to model checkpoint')
+    parser.add_argument('--checkpoint', required=True,
+                        help='Path to model checkpoint')
     parser.add_argument('--text_encoder', default='bert-base-uncased')
     parser.add_argument('--device', default='cuda')
     # parser.add_argument('--image', required=True, help='Path to input image')
@@ -236,6 +254,23 @@ def evaluation(args, model, data_loader, tokenizer, device, config):
 
     for i, (image_path, image, label, text, fake_image_box, fake_word_pos, W, H) in (
             enumerate(metric_logger.log_every(args, data_loader, print_freq, header))):
+        if type(image_path) is list:
+            image_path = image_path[0]
+
+ 
+        face_mask_res = face_mask_detection(image_path)
+
+        # 如果检测不到人脸，则跳过
+        if face_mask_res["face_result"] != 2:
+            print("--------------------------------")
+            print("[Warning][No Valid Face]", image_path)
+            print("--------------------------------")
+            continue
+            # print("face_mask_res", face_mask_res)
+            # image = image.to(device, non_blocking=True)
+        pre_bbox = face_mask_res["bbox"]
+
+        # Move image to device
         image = image.to(device, non_blocking=True)
 
         text_input = tokenizer(text, max_length=128, truncation=True, add_special_tokens=True,
@@ -253,7 +288,7 @@ def evaluation(args, model, data_loader, tokenizer, device, config):
             "logits_tok": logits_tok
         })
 
-        visualize_results(image_path[0], text, output_coord, logits_tok, tokenizer, )
+        visualize_results(image_path, text, output_coord, logits_tok, tokenizer, pre_bbox)
     #     ##================= real/fake cls ========================##
     #     cls_label = torch.ones(len(label), dtype=torch.long).to(image.device)
     #     real_label_pos = np.where(np.array(label) == 'orig')[0].tolist()
@@ -356,6 +391,13 @@ def evaluation(args, model, data_loader, tokenizer, device, config):
 # "image": "DGM4/origin/bbc/0498/511.jpg",
 # "text": "Geoffrey Martin has run a butcher shop for 28 years",
 
+
+def test_face_mask_detection():
+    res = face_mask_detection(
+        "/home/peng/PROGRAM/GitHub/MultiModal-DeepFake/data/DGM4/mask/image.png")
+    print(res)
+
+
 if __name__ == '__main__':
     # image = "data/DGM4/origin/bbc/0498/511.jpg"
     # text = "Geoffrey Martin has run a butcher shop for 28 years"
@@ -370,3 +412,4 @@ if __name__ == '__main__':
                 ]
 
     main()
+    # test_face_mask_detection()
